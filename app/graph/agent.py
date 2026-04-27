@@ -1,55 +1,57 @@
 """
-Grafo LangGraph para Hannah AI.
-Arquitectura ReAct: el LLM decide qué tools usar, las ejecuta y responde.
-Soporta streaming token a token.
+Ensambla el StateGraph de Hannah AI.
+Arquitectura: llm_call ↔ tools_node (loop ReAct)
 """
-from langgraph.prebuilt import create_react_agent
-from langchain_anthropic import ChatAnthropic
-from langchain_openai import ChatOpenAI
-from ..core.config import settings
-from ..tools.hannah_tools import build_tools
+from langgraph.graph import StateGraph, START
+from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.checkpoint.memory import InMemorySaver
+from .state import HannahState
+from .nodes import get_llm, make_llm_node
+from ..tools.proyectos import consultar_proyectos
+from ..tools.tickets import consultar_tickets
+from ..tools.reuniones import consultar_reuniones
+
+# Lista de tools disponibles para el agente
+TOOLS = [consultar_proyectos, consultar_tickets, consultar_reuniones]
+
+# Checkpointer en memoria (dev). En prod: PostgresSaver
+checkpointer = InMemorySaver()
 
 
-SYSTEM_PROMPT = """Eres Hannah AI, el asistente inteligente de Hannah Lab.
-Ayudas a los clientes de Hannah Lab a entender el estado de sus proyectos, tickets y reuniones.
-
-Reglas:
-- Responde siempre en español, de forma clara y concisa.
-- Usa las tools disponibles para consultar datos reales antes de responder.
-- Si el usuario pregunta por proyectos, tickets o reuniones, SIEMPRE consulta primero la tool correspondiente.
-- Formatea las respuestas con markdown cuando mejore la legibilidad.
-- Si no tienes información suficiente, dilo con honestidad.
-- No inventes datos. Solo usa lo que devuelven las tools.
-- Sé amable y profesional.
-"""
-
-
-def build_agent(token: str):
+def build_graph():
     """
-    Construye el agente LangGraph con las tools del usuario.
-    Usa Claude si hay API key de Anthropic, sino OpenAI.
+    Construye y compila el StateGraph del agente.
+    Se llama una sola vez al arrancar la app (singleton).
     """
-    tools = build_tools(token)
+    llm_with_tools = get_llm(TOOLS)
+    llm_node = make_llm_node(llm_with_tools)
 
-    if settings.anthropic_api_key:
-        llm = ChatAnthropic(
-            model="claude-3-5-haiku-20241022",
-            api_key=settings.anthropic_api_key,
-            temperature=0.3,
-            max_tokens=1024,
-            streaming=True,
-        )
-    else:
-        llm = ChatOpenAI(
-            model="gpt-4o-mini",
-            api_key=settings.openai_api_key,
-            temperature=0.3,
-            streaming=True,
-        )
+    builder = StateGraph(HannahState)
 
-    agent = create_react_agent(
-        model=llm,
-        tools=tools,
-        state_modifier=SYSTEM_PROMPT,
-    )
-    return agent
+    # Nodos
+    builder.add_node("llm_call", llm_node)
+    builder.add_node("tools", ToolNode(TOOLS))
+
+    # Edges
+    builder.add_edge(START, "llm_call")
+    # tools_condition: si el LLM hizo tool_calls → "tools", sino → END
+    builder.add_conditional_edges("llm_call", tools_condition)
+    # Después de ejecutar tools, vuelve al LLM
+    builder.add_edge("tools", "llm_call")
+
+    return builder.compile(checkpointer=checkpointer)
+
+
+# Instancia global del grafo — se compila lazily en el primer request
+_graph = None
+
+
+def get_graph():
+    global _graph
+    if _graph is None:
+        _graph = build_graph()
+    return _graph
+
+
+# Alias para importar directamente (compatibilidad)
+graph = None  # se inicializa en lifespan de FastAPI
