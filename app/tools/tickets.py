@@ -7,14 +7,19 @@ from ..core.config import settings
 @tool
 async def consultar_tickets(query: str, config: RunnableConfig) -> str:
     """
-    Consulta los tickets de soporte del usuario: título, estado y prioridad.
-    Úsala cuando el usuario pregunta por soporte, tickets, problemas reportados o incidencias.
+    Consulta los tickets de soporte: título, estado y prioridad.
+    El alcance se ajusta automáticamente al rol del usuario:
+    - admin/subadmin: ven todos los tickets del sistema
+    - cliente: ve solo sus propios tickets
     """
-    token = config["configurable"].get("token", "")
+    cfg = config.get("configurable", {})
+    token = cfg.get("token", "")
+    rol = cfg.get("user_rol", "cliente")
+    endpoint = "/tickets" if rol in ("admin", "subadmin") else "/tickets/mis-tickets"
     try:
         async with httpx.AsyncClient(base_url=settings.nestjs_api_url, timeout=10) as client:
             r = await client.get(
-                "/tickets/mis-tickets",
+                endpoint,
                 headers={"Authorization": f"Bearer {token}"},
             )
             r.raise_for_status()

@@ -16,14 +16,19 @@ def _fmt_fecha(fecha_str: str) -> str:
 @tool
 async def consultar_reuniones(query: str, config: RunnableConfig) -> str:
     """
-    Consulta las reuniones del usuario: título, fecha, tipo, link de acceso y agenda.
-    Úsala cuando el usuario pregunta por reuniones, agenda, próximas citas o videollamadas.
+    Consulta las reuniones: título, fecha, tipo, link de acceso y agenda.
+    El alcance se ajusta automáticamente al rol del usuario:
+    - admin/subadmin: ven todas las reuniones del sistema
+    - cliente: ve solo sus propias reuniones
     """
-    token = config["configurable"].get("token", "")
+    cfg = config.get("configurable", {})
+    token = cfg.get("token", "")
+    rol = cfg.get("user_rol", "cliente")
+    endpoint = "/reuniones" if rol in ("admin", "subadmin") else "/reuniones/mis-reuniones"
     try:
         async with httpx.AsyncClient(base_url=settings.nestjs_api_url, timeout=10) as client:
             r = await client.get(
-                "/reuniones/mis-reuniones",
+                endpoint,
                 headers={"Authorization": f"Bearer {token}"},
             )
             r.raise_for_status()

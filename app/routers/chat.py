@@ -1,19 +1,24 @@
 """
 Router de chat con streaming SSE.
-Usa stream_mode="messages" (forma correcta según docs LangGraph 2025).
+
+Nota de implementación:
+  Con nodos custom (async def + ainvoke) en Python 3.10, on_chat_model_stream
+  y get_stream_writer no propagan el contexto correctamente. El patrón que
+  funciona en este stack es on_chain_end del nodo llm_call via astream_events v2:
+  el evento contiene el AIMessage final completo (sin tool_calls = respuesta final).
 
 Formato SSE devuelto al frontend:
-    data: {"type": "token", "content": "Hola"}
     data: {"type": "tool_start", "tool": "consultar_proyectos"}
-    data: {"type": "tool_end", "tool": "consultar_proyectos"}
+    data: {"type": "tool_end",   "tool": "consultar_proyectos"}
+    data: {"type": "token",      "content": "Hola..."}
     data: {"type": "done"}
-    data: {"type": "error", "content": "mensaje"}
+    data: {"type": "error",      "content": "mensaje"}
 """
 import json
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from langchain_core.messages import HumanMessage, AIMessage
 from ..core.auth import get_current_user
 from ..graph.agent import get_graph
 
@@ -22,6 +27,7 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 class ChatRequest(BaseModel):
     message: str
+    session_id: str = ""
 
 
 @router.post("/stream")
@@ -29,17 +35,20 @@ async def chat_stream(
     body: ChatRequest,
     user: dict = Depends(get_current_user),
 ):
-    """
-    Endpoint SSE: devuelve tokens del LLM a medida que se generan.
-    El historial se mantiene automáticamente por thread_id (userId).
-    """
     user_id: str = user["sub"]
     raw_token: str = user["_raw_token"]
+    thread_id = f"{user_id}:{body.session_id}" if body.session_id else user_id
 
+    # Identidad del usuario extraída del JWT validado.
+    # El rol viene firmado por NestJS — el usuario NO puede manipularlo desde el chat.
     config = {
         "configurable": {
-            "thread_id": user_id,   # historial por usuario
-            "token": raw_token,     # token para que las tools llamen al NestJS
+            "thread_id": thread_id,
+            "token": raw_token,
+            "user_id": user_id,
+            "user_rol": user.get("rol", "cliente"),
+            "user_nombre": user.get("nombre", ""),
+            "user_email": user.get("email", ""),
         }
     }
 
@@ -47,33 +56,53 @@ async def chat_stream(
 
     async def event_generator():
         try:
-            async for msg, metadata in get_graph().astream(
+            tools_emitted: set[str] = set()  # evitar tool_start duplicados
+            final_emitted = False             # evitar emitir la respuesta final 2 veces
+
+            async for event in get_graph().astream_events(
                 input_state,
                 config=config,
-                stream_mode="messages",
+                version="v2",
             ):
-                # Token de texto del LLM
-                if (
-                    isinstance(msg, AIMessage)
-                    and msg.content
-                    and not msg.tool_calls
-                ):
-                    content = msg.content
-                    if isinstance(content, list):
-                        for block in content:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                yield _sse({"type": "token", "content": block["text"]})
-                    elif isinstance(content, str):
-                        yield _sse({"type": "token", "content": content})
+                kind = event["event"]
+                name = event.get("name", "")
+                meta_node = event.get("metadata", {}).get("langgraph_node", "")
 
-                # Tool invocada — notifica al frontend para mostrar "buscando..."
-                elif isinstance(msg, AIMessage) and msg.tool_calls:
-                    for tc in msg.tool_calls:
-                        yield _sse({"type": "tool_start", "tool": tc["name"]})
+                # ── Tool iniciada ──────────────────────────────────────────
+                if kind == "on_tool_start":
+                    key = f"{name}:{event.get('run_id','')}"
+                    if key not in tools_emitted:
+                        tools_emitted.add(key)
+                        yield _sse({"type": "tool_start", "tool": name})
 
-                # Resultado de tool
-                elif isinstance(msg, ToolMessage):
-                    yield _sse({"type": "tool_end", "tool": metadata.get("name", "tool")})
+                # ── Tool terminada ─────────────────────────────────────────
+                elif kind == "on_tool_end":
+                    yield _sse({"type": "tool_end", "tool": name})
+
+                # ── Respuesta final del LLM ────────────────────────────────
+                # Con Python 3.10 + nodos custom, on_chat_model_stream no propaga.
+                # on_chain_end del nodo llm_call contiene el AIMessage final completo.
+                # final_emitted previene el duplicado (on_chain_end dispara 2 veces).
+                elif kind == "on_chain_end" and meta_node == "llm_call" and not final_emitted:
+                    output = event.get("data", {}).get("output", {})
+                    msgs = output.get("messages", []) if isinstance(output, dict) else []
+                    for msg in msgs:
+                        if not isinstance(msg, AIMessage):
+                            continue
+                        if getattr(msg, "tool_calls", None):
+                            continue  # LLM va a llamar una tool, no es respuesta final
+                        content = msg.content
+                        if not content:
+                            continue
+                        final_emitted = True
+                        if isinstance(content, str):
+                            yield _sse({"type": "token", "content": content})
+                        elif isinstance(content, list):
+                            for block in content:
+                                if isinstance(block, dict) and block.get("type") == "text":
+                                    text = block.get("text", "")
+                                    if text:
+                                        yield _sse({"type": "token", "content": text})
 
             yield _sse({"type": "done"})
 
@@ -83,22 +112,13 @@ async def chat_stream(
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
 @router.delete("/history")
 async def clear_history(user: dict = Depends(get_current_user)):
-    """
-    Borra el historial de conversación del usuario actual.
-    """
-    # Con InMemorySaver no hay API de borrado directo,
-    # el historial se limpia reiniciando con un thread_id nuevo.
-    # En prod con PostgresSaver se puede borrar el checkpoint.
-    return {"ok": True, "message": "Historial limpiado"}
+    return {"ok": True}
 
 
 def _sse(data: dict) -> str:
