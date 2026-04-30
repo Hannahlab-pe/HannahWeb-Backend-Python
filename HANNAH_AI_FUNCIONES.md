@@ -44,7 +44,28 @@ Consulta proyectos, módulos (implementaciones) y tareas del tablero kanban.
 
 ---
 
-### 2. `consultar_tickets`
+### 2. `consultar_miembros_proyecto`
+**Archivo:** `app/tools/miembros.py`
+
+Devuelve el equipo asignado a un proyecto específico. Acepta el nombre del proyecto (parcial, sin importar mayúsculas).
+
+| Campo devuelto | Descripción |
+|---|---|
+| Encargados del proyecto | nombre + email |
+| Responsables de tareas | agrupados por persona: nombre, email, lista de tareas con módulo y estado |
+
+**Flujo de aclaración integrado:**
+- Si el nombre no coincide con ningún proyecto → devuelve lista de proyectos disponibles para que el LLM pida aclaración
+- Si hay varias coincidencias parciales → devuelve las opciones y pide que el usuario elija una
+- Si hay coincidencia única → devuelve el equipo completo
+
+**Endpoint usado:** mismo que `consultar_proyectos` según rol + `GET /implementaciones/proyecto/:id`
+
+**Cuándo se activa:** "¿quién trabaja en X?", "¿quiénes están asignados a X?", "equipo del proyecto X", "responsables de X".
+
+---
+
+### 3. `consultar_tickets`
 **Archivo:** `app/tools/tickets.py`
 
 Consulta tickets de soporte e incidencias.
@@ -114,7 +135,6 @@ El chat rechaza y redirige (sin elaborar) preguntas sobre:
 - [ ] **Resumen de sprint** — IA genera un resumen del estado de todas las tareas de un proyecto
 - [ ] **Filtrar tareas por responsable** — "¿qué tiene pendiente Stefan?"
 - [ ] **Alertas de vencimiento** — "¿qué tareas vencen esta semana?"
-- [ ] **Consultar un proyecto específico** — búsqueda por nombre en vez de listar todos
 
 ---
 
@@ -127,3 +147,4 @@ El chat rechaza y redirige (sin elaborar) preguntas sobre:
 | 2026-04-28 | System prompt: rechazo de temas fuera de HannahLab. |
 | 2026-04-29 | Fix: GPT-4o dejaba de responder preguntas válidas sobre proyectos ("base de datos"). |
 | 2026-04-30 | Fix: GPT-4o rechazaba preguntas sobre la propia IA ("quién eres", "quién te creó"). |
+| 2026-04-30 | Nueva tool `consultar_miembros_proyecto`: equipo por proyecto con flujo de aclaración integrado. |
