@@ -8,12 +8,12 @@ from langgraph.checkpoint.memory import InMemorySaver
 from .state import HannahState
 from .nodes import get_llm, make_llm_node
 from ..tools.proyectos import consultar_proyectos
-from ..tools.tickets import consultar_tickets
+from ..tools.tickets import consultar_tickets, crear_ticket
 from ..tools.reuniones import consultar_reuniones
 from ..tools.miembros import consultar_miembros_proyecto
 
 # Lista de tools disponibles para el agente
-TOOLS = [consultar_proyectos, consultar_tickets, consultar_reuniones, consultar_miembros_proyecto]
+TOOLS = [consultar_proyectos, consultar_tickets, crear_ticket, consultar_reuniones, consultar_miembros_proyecto]
 
 # Checkpointer en memoria (dev). En prod: PostgresSaver
 checkpointer = InMemorySaver()
