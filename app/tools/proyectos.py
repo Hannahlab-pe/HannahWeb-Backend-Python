@@ -87,7 +87,7 @@ async def consultar_proyectos(query: str, config: RunnableConfig) -> str:
                     lines.append("  Sin tareas registradas.")
                     continue
 
-                pendientes  = [t for t in tareas if t.get("columna") == "pendiente"]
+                pendientes  = [t for t in tareas if t.get("columna") == "por_hacer"]
                 en_prog     = [t for t in tareas if t.get("columna") == "en_progreso"]
                 en_rev      = [t for t in tareas if t.get("columna") == "en_revision"]
                 completadas = [t for t in tareas if t.get("columna") == "completado"]
