@@ -94,18 +94,26 @@ async def consultar_proyectos(query: str, config: RunnableConfig) -> str:
 
                 lines.append(f"  Resumen: {len(tareas)} tareas total — {len(completadas)} completadas, {len(en_prog)} en progreso, {len(en_rev)} en revision, {len(pendientes)} pendientes")
 
+                def _fmt_tarea(t: dict) -> str:
+                    col = t.get("columna", "—")
+                    prio = t.get("prioridad", "")
+                    resp = t["responsables"][0]["nombre"] if t.get("responsables") else "Sin responsable"
+                    fecha_t = t.get("fechaLimite", "")
+                    fecha_t_str = f" | limite: {fecha_t}" if fecha_t else ""
+                    return f"    - [{col}] {t['titulo']} (prioridad: {prio}, responsable: {resp}{fecha_t_str})"
+
                 activas = pendientes + en_prog + en_rev
                 if activas:
                     lines.append("  Tareas activas:")
                     for t in activas[:10]:
-                        col = t.get("columna", "—")
-                        prio = t.get("prioridad", "")
-                        resp = t["responsables"][0]["nombre"] if t.get("responsables") else "Sin responsable"
-                        fecha_t = t.get("fechaLimite", "")
-                        fecha_t_str = f" | limite: {fecha_t}" if fecha_t else ""
-                        lines.append(f"    - [{col}] {t['titulo']} (prioridad: {prio}, responsable: {resp}{fecha_t_str})")
+                        lines.append(_fmt_tarea(t))
                 else:
                     lines.append("  Todas las tareas estan completadas.")
+
+                if completadas:
+                    lines.append("  Tareas completadas:")
+                    for t in completadas[:20]:
+                        lines.append(_fmt_tarea(t))
 
             lines.append("")
 
