@@ -389,7 +389,99 @@ Activa todos los `event["event"]` para ver qué emite el grafo. Útiles:
 
 ---
 
-## 11. Recetas rápidas (problemas comunes)
+## 11. Cómo implementar una tool de escritura (POST) — lección aprendida
+
+Implementar `crear_ticket` reveló errores concretos. Seguí exactamente este orden para evitarlos.
+
+### 11.1 Firma correcta de la tool
+
+**Error más común**: poner `config: RunnableConfig = None` (con default `None`). Esto hace que LangChain no inyecte el config en runtime → `token = ""` → el POST al backend falla con 401 silencioso.
+
+**Correcto**:
+```python
+@tool
+async def crear_ticket(
+    titulo: str,
+    descripcion: str,
+    prioridad: str,
+    config: RunnableConfig,          # ← SIN default, ANTES de los Optional
+    tipo: Optional[str] = "incidencia",
+    proyecto_nombre: Optional[str] = None,
+) -> str:
+    cfg = config.get("configurable", {})
+    token = cfg.get("token", "")
+    rol   = cfg.get("user_rol", "cliente")
+```
+
+Regla: `config: RunnableConfig` siempre sin default, después de los parámetros requeridos y antes de los opcionales.
+
+### 11.2 Resolver nombre de proyecto → ID dentro de la tool
+
+**Nunca** pedir al LLM que pase un UUID directamente — el LLM no lo conoce. En cambio:
+- El parámetro se llama `proyecto_nombre: Optional[str]`
+- La tool consulta el endpoint de proyectos internamente (con el token del config)
+- Coincidencia única → usa el ID
+- Sin coincidencia → devuelve lista de proyectos disponibles para que el LLM la muestre al usuario
+- Múltiples coincidencias → devuelve opciones y pide que el usuario elija
+
+```python
+coincidencias = [p for p in proyectos if busqueda in p.get("nombre", "").lower()]
+if not coincidencias:
+    return f"No encontré '{proyecto_nombre}'. Proyectos disponibles:\n" + \
+           "\n".join(f"- {p['nombre']}" for p in proyectos)
+if len(coincidencias) > 1:
+    return "Varios coinciden:\n" + "\n".join(f"- {p['nombre']}" for p in coincidencias)
+proyecto_id = coincidencias[0]["id"]
+```
+
+### 11.3 Confirmación sin `interrupt()`
+
+`interrupt()` de LangGraph requiere un checkpointer con persistencia duradera y que el frontend maneje el estado "pausado". Para este proyecto con `InMemorySaver`, es más simple manejar la confirmación **desde el system prompt**:
+
+```
+5. Muestra un resumen del ticket y pregunta "¿Confirmo la creación?"
+6. Solo llama `crear_ticket` si el usuario confirma explícitamente.
+7. NUNCA llames `crear_ticket` sin confirmación explícita del usuario.
+```
+
+El LLM respeta esta instrucción. No hace falta `interrupt()`.
+
+### 11.4 Debugging de tools cuando el error es silencioso
+
+Si el LLM dice "hubo un error" sin detalle, el error está dentro de la tool. Para verlo:
+- `print()` no funciona cuando uvicorn corre con `--reload` en un subproceso — el stdout no llega al log file.
+- **Solución**: escribir a un archivo directamente:
+
+```python
+import pathlib, datetime
+_log = pathlib.Path("C:/tmp/hannah_debug.log")
+_log.parent.mkdir(exist_ok=True)
+_log.write_text(f"[{datetime.datetime.now()}] token_len={len(token)}\n")
+
+except Exception as e:
+    import traceback
+    _log.write_text(_log.read_text() + f"\n{traceback.format_exc()}")
+    return f"Error inesperado: {str(e)}"
+```
+
+Leer el archivo después para ver el traceback completo. Quitar el código de debug antes del push.
+
+### 11.5 Error handling visible para el LLM
+
+El LLM parafrasea vagamente si el mensaje de error es genérico. Devuelve mensajes concretos:
+
+```python
+except httpx.HTTPStatusError as e:
+    return f"Error al crear el ticket: {e.response.status_code} — {e.response.text}"
+except Exception as e:
+    return f"Error inesperado al crear ticket: {str(e)}"
+```
+
+Nunca dejes que una excepción burbujee sin capturar — el ToolNode la capturaría pero el LLM no recibiría el detalle.
+
+---
+
+## 12. Recetas rápidas (problemas comunes)
 
 ### El LLM no llama mi tool
 - Revisar el docstring de la tool: ¿describe claramente cuándo usarla? ¿menciona las palabras clave que el usuario diría?
